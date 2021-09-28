@@ -1,11 +1,12 @@
 FROM joyzoursky/python-chromedriver:3.8
 
-COPY . /app
 WORKDIR /app
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 RUN export PATH=$PATH:/usr/lib/chromium-browser/
 
-RUN pip install --no-cache-dir -r requirements.txt
+COPY . /app
 
 VOLUME /config
 
