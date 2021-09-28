@@ -3,6 +3,8 @@ import re
 import logging
 import requests
 import selenium
+import urllib.parse
+import json
 from time import sleep as sleep
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
@@ -71,8 +73,11 @@ class Crawler:
             return self.get_soup_with_proxy(url)
         if driver is not None:
             driver.get(url)
-            if re.search("g-recaptcha", driver.page_source):
+            if re.search("geetest", driver.page_source):
+                self.resolvegeetest(driver, checkbox, afterlogin_string, captcha_api_key)
+            elif re.search("g-recaptcha", driver.page_source):
                 self.resolvecaptcha(driver, checkbox, afterlogin_string, captcha_api_key)
+
             return BeautifulSoup(driver.page_source, 'html.parser')
         return BeautifulSoup(resp.content, 'html.parser')
 
@@ -157,6 +162,36 @@ class Crawler:
             else:
                 self._wait_for_captcha_resolution(driver, checkbox, afterlogin_string)
 
+    def resolvegeetest(self, driver, checkbox: bool, afterlogin_string: str = "", api_key: str = None):
+        # driver.execute_script('chrome.webRequest.onBeforeRequest.addListener(function() {return {cancel: true};},{urls: ["*://api.geetest.com/*"]},["blocking"]);')
+        geetest_present = self._check_if_geetest_visible(driver)
+        gt = driver.execute_script('return window.GeeGT')
+        challenge = driver.execute_script('return window.GeeChallenge')
+        # print('geetest')
+        # print(gt)
+        # print(challenge)
+        m = re.search("data: \"(.+)\"", driver.page_source)
+        if gt and challenge and m and m.group(1):
+          url = driver.current_url
+          session = requests.Session()
+          postrequest = (
+              f"http://2captcha.com/in.php?key={api_key}&method=geetest&gt={gt}&api-server=api.geetest.com&challenge={challenge}&pageurl={urllib.parse.quote_plus(url)}"
+          )
+          captcha_id = session.post(postrequest).text.split("|")[1]
+          geetest_answer = session.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}").text
+          while "CAPCHA_NOT_READY" in geetest_answer:
+              sleep(5)
+              self.__log__.debug("Captcha status: %s", geetest_answer)
+              geetest_answer = session.get(f"http://2captcha.com/res.php?key={api_key}&action=get&id={captcha_id}").text
+          self.__log__.debug("Captcha promise: %s", geetest_answer)
+          geetest_answer = geetest_answer[geetest_answer.find('|')+1:]
+          geetest_answer = json.loads(geetest_answer)
+          answer_challenge = geetest_answer['geetest_challenge']
+          answer_seccode = geetest_answer['geetest_seccode']
+          answer_validate = geetest_answer['geetest_validate']
+          driver.execute_script(f'solvedCaptcha({{ geetest_challenge: "{answer_challenge}", geetest_seccode: "{answer_seccode}", geetest_validate: "{answer_validate}", data: "{m.group(1)}"}})')
+          self._check_if_geetest_not_visible(driver)
+
     def _solve(self, driver, api_key):
         google_site_key = driver.find_element_by_class_name("g-recaptcha").get_attribute("data-sitekey")
         self.__log__.debug("Google site key: %s", google_site_key)
@@ -209,6 +244,24 @@ class Crawler:
             return iframe
         except NoSuchElementException:
             print("No iframe found, therefore no chaptcha verification necessary")
+        # except selenium.common.exceptions.TimeoutException:
+        #     print("Timeout on recaptcha")
+
+    def _check_if_geetest_visible(self, driver: selenium.webdriver.Chrome):
+        try:
+            geetest = WebDriverWait(driver, 10).until(EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "div#captcha-box")))
+            return geetest
+        except NoSuchElementException:
+            print("No geetest found, therefore no chaptcha verification necessary")
+
+    def _check_if_geetest_not_visible(self, driver: selenium.webdriver.Chrome):
+        try:
+            geetest = WebDriverWait(driver, 10).until(EC.invisibility_of_element(
+                (By.CSS_SELECTOR, "div.main__captcha")))
+            return geetest
+        except NoSuchElementException:
+            print("Element not found")
 
     def _check_if_iframe_not_visible(self, driver: selenium.webdriver.Chrome):
         try:
